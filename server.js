@@ -6,8 +6,7 @@ const passport = require('passport');
 const bcrypt = require('bcrypt');
 const {Strategy} = require('passport-local');
 const cors = require('cors');
-const pg = require('pg');
-const e = require('express');
+const {createClient } = require('@supabase/supabase-js');
 const app = express();
 dotenv.config();
 app.use(cors({
@@ -16,14 +15,7 @@ app.use(cors({
     credentials:true,
 }))
 const salt = 10;
-const db = new pg.Client({
-    user:"postgres",
-    host:"localhost",
-    password:"isbz1234",
-    port:5432,
-    database:'leatData'
-});
-db.connect();
+
 app.use(session({
     secret:process.env.SECRET,
     resave:false,
@@ -36,26 +28,38 @@ app.use(express.json());
 
 const genAI = new GoogleGenerativeAI(process.env.API_KEY);
 const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
- 
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseKey =process.env.SUPABASE_KEY;
+const supabase = createClient(supabaseUrl, supabaseKey)
 
 app.post("/register", async(req,res)=>{
     const username = req.body.username;
     const email = req.body.email;
     const password = req.body.password;
     try {
-       const checkUserexist = await db.query("SELECT * FROM users WHERE email = $1",[email]);
-       if(checkUserexist.rows.length > 0){
-         console.log("this user already exists")
-       }else{
-        bcrypt.hash(password,salt,async(error,hash)=>{
-            if(error){
-                console.log('there was an error')
-            }else{
-                   const saveDatainDb = await db.query("INSERT INTO users (username,email,password,aistate) VALUES($1,$2,$3,$4)",[username,email,hash,20]);  
-                 
-             } 
-         })
-       }
+        const { data, error } = await supabase
+        .from('users')
+        .select('*')
+        .eq('email',email)
+        if (error) console.log('Error:', error)
+        if(data.length > 0){
+            console.log("this user already exists")  
+        }else{
+            bcrypt.hash(password,salt,async(error,hash)=>{
+                if(error){
+                    console.log('there was an error')
+                }else{               
+                        const { data, error } = await supabase
+                        .from('users')
+                        .insert([
+                        { username: username, email: email, password: hash, aistate:20 },
+                        ])
+                        .select();
+                        if (error) console.log('Error:', error)
+                        else console.log('Data:', data)
+                 } 
+             })
+        }
     } catch (error) {
         res.json({response: "user exists" , database:"error with database"}); 
         console.log('this user already exists',error);
@@ -64,15 +68,19 @@ app.post("/register", async(req,res)=>{
    passport.use(new Strategy({usernameField:"email"},async function verify(email, password,cb){
         
         try {
-            const dataBase = await db.query("SELECT * FROM users WHERE email = $1 ",[email]);
-            const dataBasePassword = await dataBase.rows[0].password;
+            const { data, error } = await supabase
+            .from('users')
+            .select('*')
+            .eq('email',email)
+            if (error) console.log('Error:', error);
+            const dataBasePassword = await data[0].password;
             bcrypt.compare(password,dataBasePassword,async(error,result)=>{
                 if(error){
                     res.json({response:"there was an error"});
                     cb(error);
                 }else{
                     if(result){
-                        const user = await dataBase.rows;
+                        const user = await data[0];
                         cb(null,user);
                     }else{
                         cb(null);
@@ -99,7 +107,8 @@ app.post("/register", async(req,res)=>{
             if(req.user){
                 res.json({reponse:"success", message:req.user});
                 console.log("user Logged")
-                verifycookies = {reponse:"success", message:req.user};
+                verifycookies = {reponse:"success", message:req.user}; 
+                console.log(req.user)
             }else{
                 res.json({reponse:"fail"});
                 console.log("user not logged") 
@@ -121,19 +130,33 @@ app.post("/switchdata",async(req,res)=>{
     const username = req.body.datas;
     datauser = username;
     console.log(username);
-    const InsertSwitchdata = await db.query('UPDATE users SET switchstate = $1 WHERE username = $2 ',[switchValue, username]);
-    const getSwitchdata = await db.query('SELECT * FROM users WHERE username = $1',[username]);
-    selectedData = await getSwitchdata.rows[0].switchstate;
-    res.json({result: getSwitchdata.rows[0].switchstate})
+    const { Data, err } = await supabase
+    .from('users')
+    .update({ switchsate: switchValue })
+    .eq('username', username)
+    .select()
+        
+    const { data, error } = await supabase
+            .from('users')
+            .select('*')
+            .eq('username',username)
+            if (error) console.log('Error:', error);
+    const getSwitchdata = await data[0].switchsate;
+    selectedData = await data[0].switchsate;
+    res.json({result: getSwitchdata})
     console.log(req.body);  
 });
 
 let requestCounter = 0;
 app.post('/getanswer',async(req,res)=>{
-    console.log(verifycookies.message[0].username);
-    const username = verifycookies.message[0].username;
-    const aiState = await db.query("SELECT * FROM users WHERE username = $1",[username]);
-    let subnumber =  aiState.rows[0].aistate;
+    console.log(verifycookies.message.username);
+    const username = verifycookies.message.username;
+    const { data, error } = await supabase
+    .from('users')
+    .select('*')
+    .eq('username',username)
+    if (error) console.log('Error:', error);
+    let subnumber =  data[0].aistate;
     if(subnumber[0] > 0 ){ 
         const data = req.body.result;
         const prompt = data;
@@ -141,7 +164,11 @@ app.post('/getanswer',async(req,res)=>{
         console.log(result.response.text());  
         res.json(result.response.text())
         subnumber--;
-        let updateaistate = await db.query('UPDATE users SET aistate = $1 WHERE username = $2 ',[subnumber, username]);
+        const { Data, err } = await supabase
+        .from('users')
+        .update({ aistate: subnumber })
+        .eq('username', username)
+        .select()
     }else{ 
             res.json("Sorry, but you're out of your daily limit of requests") 
     }  
